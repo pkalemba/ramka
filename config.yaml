@@ -1,0 +1,34 @@
+name: "E-Paper Renderer"
+description: "Serwer PNG dla wyświetlaczy e-ink (Waveshare 7.5\"). Generuje kalendarz HA i odliczanie dni do daty."
+version: "1.0.0"
+slug: "epaper_renderer"
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+
+ports:
+  5000/tcp: 5000
+ports_description:
+  5000/tcp: "HTTP API (PNG endpoints)"
+
+options:
+  ha_url: "http://homeassistant.local:8123"
+  ha_token: ""
+  calendars:
+    - "calendar.praca"
+    - "calendar.igi"
+    - "calendar.swieta_w_polsce"
+
+schema:
+  ha_url: str
+  ha_token: str
+  calendars:
+    - str
+
+map:
+  - config:rw
+
+startup: application

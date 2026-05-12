@@ -1,0 +1,99 @@
+# ESPHome – Waveshare 7.5" e-paper (800×480) + odliczanie
+# Dokumentacja wyświetlacza: https://esphome.io/components/display/waveshare_epaper.html
+#
+# Zastąp:
+#   <TWOJE_SSID>          – nazwa sieci Wi-Fi
+#   <TWOJE_HASŁO>         – hasło Wi-Fi
+#   <IP_HOME_ASSISTANT>   – adres IP HA (lub hostname), np. 192.168.1.100
+#   <DATA_DOCELOWA>       – data w formacie RRRR-MM-DD, np. 2026-08-01
+#   <TYTUŁ>               – tekst tytułu, np. Do%20wakacji (spacje jako %20)
+
+substitutions:
+  device_name: epaper-display
+  api_server: "http://<IP_HOME_ASSISTANT>:5000"
+
+esphome:
+  name: ${device_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  password: !secret ota_password
+
+wifi:
+  ssid: "<TWOJE_SSID>"
+  password: "<TWOJE_HASŁO>"
+  ap:
+    ssid: "${device_name} fallback"
+    password: "epaper1234"
+
+captive_portal:
+
+# ─── Pobieranie obrazu ────────────────────────────────────────────────────────
+
+http_request:
+  # Zwiększony timeout – generowanie obrazu może chwilę trwać
+  timeout: 15s
+  useragent: "ESPHome/${device_name}"
+
+online_image:
+  # Odliczanie do wakacji
+  - id: img_countdown
+    url: "${api_server}/countdown.png?date=<DATA_DOCELOWA>&title=<TYTUŁ>"
+    format: PNG
+    type: BINARY
+    # Odświeżaj co 30 minut (e-ink nie lubi częstych odświeżeń)
+    update_interval: 30min
+    on_error:
+      then:
+        - logger.log: "Błąd pobierania obrazu countdown"
+
+  # Opcjonalnie: kalendarz miesięczny (odkomentuj jeśli chcesz)
+  # - id: img_calendar
+  #   url: "${api_server}/calendar.png"
+  #   format: PNG
+  #   type: BINARY
+  #   update_interval: 30min
+
+# ─── Wyświetlacz ──────────────────────────────────────────────────────────────
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+
+display:
+  - platform: waveshare_epaper
+    # Waveshare 7.5" V2 (800×480) – sprawdź model swojego ekranu:
+    # 7.50inv2  – nowa wersja (biała ramka, szybsze odświeżanie)
+    # 7.50      – starsza wersja
+    model: 7.50inv2
+    cs_pin: GPIO5
+    dc_pin: GPIO17
+    busy_pin: GPIO4
+    reset_pin: GPIO16
+    rotation: 0°
+    full_update_every: 1
+    lambda: |-
+      it.image(0, 0, id(img_countdown), COLOR_ON, COLOR_OFF);
+
+# ─── Przycisk ręcznego odświeżenia (opcjonalny) ──────────────────────────────
+
+# binary_sensor:
+#   - platform: gpio
+#     pin:
+#       number: GPIO0
+#       mode: INPUT_PULLUP
+#       inverted: true
+#     name: "Odśwież ekran"
+#     on_press:
+#       then:
+#         - component.update: img_countdown

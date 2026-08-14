@@ -18,9 +18,11 @@
 #
 # Konfiguracja: config.json w tym samym katalogu co ten plik (patrz README.md)
 
+import errno
 import json
 import os
 import shlex
+import socket
 import subprocess
 import sys
 import urllib.error
@@ -123,10 +125,15 @@ def config_candidates(env=None):
     return [directory / name for directory in directories for name in CONFIG_NAMES]
 
 
+def active_config_path(env=None):
+    """Plik konfiguracyjny, ktory faktycznie zostanie uzyty (albo domyslna sciezka)."""
+    candidates = config_candidates(env)
+    return next((item for item in candidates if item.is_file()), candidates[0])
+
+
 def read_config_file(path=None, env=None):
     if path is None:
-        candidates = config_candidates(env)
-        path = next((item for item in candidates if item.is_file()), candidates[0])
+        path = active_config_path(env)
     path = Path(path)
     try:
         with path.open(encoding="utf-8") as handle:
@@ -145,7 +152,9 @@ class ConfigError(Exception):
 
 
 class PlexError(Exception):
-    pass
+    def __init__(self, message, hint=None):
+        super().__init__(message)
+        self.hint = hint
 
 
 def resolve_token(cfg, runner=None):
@@ -169,35 +178,94 @@ def resolve_token(cfg, runner=None):
 # ===== PLEX API =====
 
 
+SANDBOX_HINT = (
+    "SwiftBar nie ma dostepu do sieci, choc skrypt uruchomiony recznie dziala.\n"
+    "System Settings > Privacy & Security > Local Network > wlacz SwiftBar\n"
+    "(pomaga tez wylaczenie i ponowne wlaczenie przelacznika).\n"
+    "Wersja SwiftBara z Mac App Store dziala w sandboksie - wersja z\n"
+    "`brew install --cask swiftbar` nie ma tego ograniczenia."
+)
+
+REFUSED_HINT = (
+    "Nikt nie slucha na tym porcie. Sprawdz, czy Plex Media Server dziala\n"
+    "i czy port w `plex_url` sie zgadza (domyslnie 32400)."
+)
+
+
+def explain_network_error(reason):
+    """Zamienia przyczyne bledu polaczenia na (opis, podpowiedz)."""
+    code = getattr(reason, "errno", None)
+    text = str(getattr(reason, "strerror", None) or reason)
+
+    if code == errno.EPERM or "not permitted" in text.lower():
+        return "macOS zablokowal polaczenie", SANDBOX_HINT
+    if code == errno.EACCES:
+        return "Brak uprawnien do polaczenia", SANDBOX_HINT
+    if code == errno.ECONNREFUSED or "refused" in text.lower():
+        return "Polaczenie odrzucone", REFUSED_HINT
+    if isinstance(reason, socket.gaierror) or code == socket.EAI_NONAME:
+        return "Nie mozna rozwiazac nazwy hosta", "Sprawdz `plex_url` w config.json."
+    if isinstance(reason, (socket.timeout, TimeoutError)) or code == errno.ETIMEDOUT:
+        return "Przekroczono limit czasu", "Serwer nie odpowiada - sprawdz siec i `timeout`."
+    return text, None
+
+
+def url_variants(base_url):
+    """Dla `localhost` doklada wariant 127.0.0.1 - pod SwiftBarem bywa roznica."""
+    variants = [base_url]
+    parts = urllib.parse.urlsplit(base_url)
+    if parts.hostname == "localhost":
+        netloc = "127.0.0.1" + (":%d" % parts.port if parts.port else "")
+        variants.append(urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, "", "")))
+    return variants
+
+
 def fetch_sessions(cfg, token, opener=None):
     """Zwraca liste sesji z /status/sessions serwera Plex."""
-    url = cfg["plex_url"] + "/status/sessions"
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/json",
-            "X-Plex-Token": token,
-            "X-Plex-Client-Identifier": "plexamp-menubar",
-            "X-Plex-Product": "Plexamp Menubar",
-        },
-    )
     opener = opener or urllib.request.urlopen
-    try:
-        with opener(request, timeout=cfg["timeout"]) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        if exc.code == 401:
-            raise PlexError("Nieprawidlowy token Plex (401)")
-        raise PlexError("HTTP %s z %s" % (exc.code, url))
-    except urllib.error.URLError as exc:
-        raise PlexError("Brak polaczenia z %s (%s)" % (cfg["plex_url"], exc.reason))
-    except ValueError:
-        raise PlexError("Serwer nie zwrocil JSON-a - sprawdz adres %s" % cfg["plex_url"])
-    except OSError as exc:
-        raise PlexError("Blad sieci: %s" % exc)
+    last_error = None
 
-    container = payload.get("MediaContainer") or {}
-    return container.get("Metadata") or []
+    for base_url in url_variants(cfg["plex_url"]):
+        url = base_url + "/status/sessions"
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "X-Plex-Token": token,
+                "X-Plex-Client-Identifier": "plexamp-menubar",
+                "X-Plex-Product": "Plexamp Menubar",
+            },
+        )
+        try:
+            with opener(request, timeout=cfg["timeout"]) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                raise PlexError(
+                    "Nieprawidlowy token Plex (401)",
+                    "Token wygasl albo jest z innego konta - wygeneruj nowy.",
+                )
+            raise PlexError("HTTP %s z %s" % (exc.code, url))
+        except urllib.error.URLError as exc:
+            description, hint = explain_network_error(exc.reason)
+            last_error = PlexError(
+                "%s: %s (%s)" % (description, cfg["plex_url"], exc.reason), hint
+            )
+            continue
+        except ValueError:
+            raise PlexError(
+                "Serwer nie zwrocil JSON-a",
+                "Czy pod %s naprawde stoi Plex Media Server?" % cfg["plex_url"],
+            )
+        except OSError as exc:
+            description, hint = explain_network_error(exc)
+            last_error = PlexError("%s: %s" % (description, cfg["plex_url"]), hint)
+            continue
+
+        container = payload.get("MediaContainer") or {}
+        return container.get("Metadata") or []
+
+    raise last_error
 
 
 def matches_player(session, players):
@@ -349,13 +417,23 @@ def render_idle(cfg):
     return "\n".join(lines)
 
 
+def diagnose_menu_line(label="Diagnostyka w Terminalu"):
+    """Uruchamia ten sam plik z --diagnose w oknie Terminala."""
+    return '%s | bash="%s" param1="%s" param2=--diagnose terminal=true refresh=false' % (
+        label,
+        param_value(sys.executable or "/usr/bin/python3"),
+        param_value(Path(__file__).resolve()),
+    )
+
+
 def render_error(message, cfg, hint=None):
     lines = ["⚠︎ | color=orange", "---", escape(message) + " | color=orange"]
     if hint:
         for line in hint.splitlines():
             lines.append("%s | color=gray font=Menlo" % escape(line))
     lines.append("---")
-    lines.append("Konfiguracja: %s | color=gray" % escape(DEFAULT_CONFIG_PATH))
+    lines.append("Konfiguracja: %s | color=gray" % escape(active_config_path()))
+    lines.append(diagnose_menu_line())
     lines.append("Odswiez | refresh=true")
     return "\n".join(lines)
 
@@ -376,7 +454,109 @@ def build_output(cfg, token, opener=None):
     return render_track(describe(session), cfg)
 
 
-def main():
+# ===== DIAGNOSTYKA =====
+
+
+def tcp_check(host, port, timeout=3.0):
+    """Zwraca (ok, opis) dla surowego polaczenia TCP - omija warstwe HTTP."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, "OK"
+    except OSError as exc:
+        description, _ = explain_network_error(exc)
+        return False, description
+
+
+def diagnose(stream=None):
+    """Wypisuje, co widzi wtyczka - to samo srodowisko, w ktorym uruchamia ja SwiftBar."""
+    out = stream or sys.stdout
+    say = lambda text="": print(text, file=out)  # noqa: E731
+
+    say("=== Plexamp menubar - diagnostyka ===")
+    say("python:        %s" % (sys.executable or "?"))
+    say("wersja:        %s" % sys.version.split()[0])
+    say("wtyczka:       %s" % Path(__file__).resolve())
+    say("katalog roboczy: %s" % Path.cwd())
+    say("sandbox:       %s" % (os.environ.get("APP_SANDBOX_CONTAINER_ID") or "brak zmiennej"))
+    say("SwiftBar:      %s" % (os.environ.get("SWIFTBAR_VERSION") or "uruchomione poza SwiftBarem"))
+    say()
+
+    say("Szukane pliki konfiguracyjne:")
+    for candidate in config_candidates():
+        say("  %s %s" % ("[jest]" if candidate.is_file() else "[brak]", candidate))
+
+    try:
+        config_data = read_config_file()
+    except ConfigError as exc:
+        say("BLAD: %s" % exc)
+        return 1
+
+    cfg = load_config(config_data=config_data)
+    say("uzyty plik:    %s" % active_config_path())
+    say("plex_url:      %s" % cfg["plex_url"])
+    say("players:       %s" % (cfg["players"] or "[wszystkie]"))
+    say()
+
+    try:
+        token = resolve_token(cfg)
+    except ConfigError as exc:
+        say("BLAD tokenu: %s" % exc)
+        return 1
+    say("token:         %s" % ("jest (%d znakow)" % len(token) if token else "BRAK"))
+    if not token:
+        say(SETUP_HINT)
+        return 1
+    say()
+
+    say("Test polaczenia TCP:")
+    for base_url in url_variants(cfg["plex_url"]):
+        parts = urllib.parse.urlsplit(base_url)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        ok, description = tcp_check(parts.hostname, port, cfg["timeout"])
+        say("  %s %s:%s - %s" % ("[ok] " if ok else "[nie]", parts.hostname, port, description))
+    say()
+
+    say("Zapytanie do Plexa:")
+    try:
+        sessions = fetch_sessions(cfg, token)
+    except PlexError as exc:
+        say("  BLAD: %s" % exc)
+        if exc.hint:
+            say()
+            for line in exc.hint.splitlines():
+                say("  %s" % line)
+        return 1
+
+    say("  sesji lacznie: %d" % len(sessions))
+    for item in sessions:
+        player = item.get("Player") or {}
+        say(
+            "  - typ=%s product=%s state=%s | %s - %s"
+            % (
+                item.get("type"),
+                player.get("product"),
+                player.get("state"),
+                item.get("grandparentTitle"),
+                item.get("title"),
+            )
+        )
+    picked = pick_session(sessions, cfg)
+    say()
+    say("Po filtrach (players=%s, music_only=%s): %s" % (
+        cfg["players"], cfg["music_only"], "brak dopasowania" if picked is None else "jest"
+    ))
+    if picked is not None:
+        say()
+        say("W pasku menu pojawi sie:")
+        say("  %s" % format_menu_title(describe(picked), cfg))
+    return 0
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if "--diagnose" in argv:
+        return diagnose()
+
     try:
         cfg = load_config(config_data=read_config_file())
         token = resolve_token(cfg)
@@ -384,7 +564,7 @@ def main():
     except ConfigError as exc:
         output = render_error(str(exc), load_config(), SETUP_HINT)
     except PlexError as exc:
-        output = render_error(str(exc), load_config())
+        output = render_error(str(exc), load_config(), exc.hint)
     if output:
         print(output)
     return 0

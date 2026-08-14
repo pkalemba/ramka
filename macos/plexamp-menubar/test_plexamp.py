@@ -2,11 +2,14 @@
 # -*- coding: utf-8 -*-
 """Testy logiki wtyczki (dzialaja na kazdym systemie, bez macOS i bez Plexa)."""
 
+import errno
 import importlib.util
 import io
 import json
+import socket
 import tempfile
 import unittest
+import unittest.mock
 import urllib.error
 from pathlib import Path
 
@@ -248,6 +251,64 @@ class RenderTests(unittest.TestCase):
         self.assertIn("refresh=true", output)
 
 
+class NetworkErrorTests(unittest.TestCase):
+    def test_permission_denied_points_at_sandbox(self):
+        description, hint = plugin.explain_network_error(
+            PermissionError(errno.EPERM, "Operation not permitted")
+        )
+        self.assertIn("zablokowal", description)
+        self.assertIn("Local Network", hint)
+
+    def test_connection_refused_points_at_server(self):
+        description, hint = plugin.explain_network_error(
+            ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused")
+        )
+        self.assertEqual(description, "Polaczenie odrzucone")
+        self.assertIn("32400", hint)
+
+    def test_unknown_host(self):
+        description, _ = plugin.explain_network_error(socket.gaierror("Name or service not known"))
+        self.assertIn("nazwy hosta", description)
+
+    def test_timeout(self):
+        description, _ = plugin.explain_network_error(TimeoutError("timed out"))
+        self.assertIn("limit czasu", description)
+
+    def test_localhost_gets_ipv4_variant(self):
+        self.assertEqual(
+            plugin.url_variants("http://localhost:32400"),
+            ["http://localhost:32400", "http://127.0.0.1:32400"],
+        )
+
+    def test_other_hosts_have_single_variant(self):
+        self.assertEqual(
+            plugin.url_variants("http://192.168.1.10:32400"), ["http://192.168.1.10:32400"]
+        )
+
+    def test_second_variant_is_tried_after_failure(self):
+        attempts = []
+
+        def opener(request, timeout=None):  # noqa: ARG001
+            attempts.append(request.full_url)
+            if "localhost" in request.full_url:
+                raise urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "refused"))
+            return fake_opener({"MediaContainer": {"Metadata": []}})(request, timeout)
+
+        cfg = plugin.load_config(env={})
+        self.assertEqual(plugin.fetch_sessions(cfg, "token", opener=opener), [])
+        self.assertEqual(len(attempts), 2)
+        self.assertIn("127.0.0.1", attempts[1])
+
+    def test_error_carries_hint_into_menu(self):
+        error = urllib.error.URLError(PermissionError(errno.EPERM, "Operation not permitted"))
+        cfg = plugin.load_config(env={})
+        with self.assertRaises(plugin.PlexError) as ctx:
+            plugin.fetch_sessions(cfg, "token", opener=fake_opener(None, error=error))
+        output = plugin.render_error(str(ctx.exception), cfg, ctx.exception.hint)
+        self.assertIn("Local Network", output)
+        self.assertIn("--diagnose", output)
+
+
 class FetchTests(unittest.TestCase):
     def setUp(self):
         self.cfg = plugin.load_config(env={})
@@ -285,6 +346,45 @@ class FetchTests(unittest.TestCase):
     def test_build_output_idle(self):
         opener = fake_opener({"MediaContainer": {"Metadata": []}})
         self.assertEqual(plugin.build_output(self.cfg, "token", opener=opener), "")
+
+
+class DiagnoseTests(unittest.TestCase):
+    def run_diagnose(self, config):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            stream = io.StringIO()
+            with unittest.mock.patch.dict(
+                plugin.os.environ, {"PLEXAMP_MENUBAR_CONFIG": str(path)}, clear=False
+            ):
+                code = plugin.diagnose(stream=stream)
+            return code, stream.getvalue()
+
+    def test_reports_missing_token(self):
+        code, output = self.run_diagnose({"plex_url": "http://127.0.0.1:1"})
+        self.assertEqual(code, 1)
+        self.assertIn("token:         BRAK", output)
+
+    def test_reports_unreachable_server(self):
+        # port 1 na loopbacku - odmowa polaczenia jest natychmiastowa
+        code, output = self.run_diagnose(
+            {"plex_url": "http://127.0.0.1:1", "plex_token": "x", "timeout": 1.0}
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("Test polaczenia TCP", output)
+        self.assertIn("Polaczenie odrzucone", output)
+        self.assertIn("jest (1 znakow)", output)
+
+    def test_lists_sessions_and_final_title(self):
+        opener = fake_opener({"MediaContainer": {"Metadata": [session()]}})
+        with unittest.mock.patch.object(plugin.urllib.request, "urlopen", opener):
+            with unittest.mock.patch.object(plugin, "tcp_check", lambda *a, **k: (True, "OK")):
+                code, output = self.run_diagnose(
+                    {"plex_url": "http://127.0.0.1:32400", "plex_token": "x"}
+                )
+        self.assertEqual(code, 0)
+        self.assertIn("sesji lacznie: 1", output)
+        self.assertIn("♪ Queen – Bohemian Rhapsody", output)
 
 
 if __name__ == "__main__":

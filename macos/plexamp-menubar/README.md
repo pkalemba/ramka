@@ -137,20 +137,45 @@ Przykład — tylko tytuł, krócej, bez pauzy:
 
 ## Rozwiązywanie problemów
 
-Uruchom wtyczkę ręcznie — wypisze to samo, co widzi SwiftBar:
+Wbudowany tryb diagnostyczny — pokazuje, który plik konfiguracyjny został użyty,
+czy token jest widoczny, czy port odpowiada i jakie sesje zwraca serwer:
 
 ```sh
-python3 ~/.swiftbar-plugins/plexamp.5s.py
+python3 "$PLUGIN_DIR"/plexamp.5s.py --diagnose
 ```
 
-- **Pusto** — nic nie gra albo sesja nie pasuje do filtra `players`.
-  Sprawdź, co widzi serwer: `curl -s -H 'Accept: application/json' \
-  "http://localhost:32400/status/sessions?X-Plex-Token=TOKEN" | python3 -m json.tool`
-  i porównaj pole `Player.product` z listą `players`.
+To samo jest pod pozycją **Diagnostyka w Terminalu** w menu błędu.
+
+### „Działa z Terminala, ale nie w SwiftBarze"
+
+Jeśli ręczne uruchomienie skryptu działa, a w pasku menu widać błąd połączenia,
+to nie jest wina konfiguracji — SwiftBar uruchamia wtyczkę w innym kontekście
+uprawnień. Po kolei:
+
+1. **System Settings → Privacy & Security → Local Network → SwiftBar** — włącz.
+   Jeśli już jest włączone, przełącz wyłącz/włącz; uprawnienie potrafi się „zaciąć",
+   szczególnie po aktualizacji aplikacji.
+2. **Wersja SwiftBara** — ta z Mac App Store działa w sandboksie, który ogranicza
+   połączenia sieciowe procesów potomnych. Wersja z `brew install --cask swiftbar`
+   nie ma tego ograniczenia.
+3. **SwiftBar musi być w `/Applications`** — uruchamiany z `~/Downloads` bywa
+   po cichu odcinany od sieci lokalnej.
+4. Jeśli mimo to nie działa, w `config.json` wpisz `127.0.0.1` zamiast `localhost`
+   (wtyczka i tak próbuje obu adresów) albo adres LAN serwera.
+
+Komunikaty w menu rozróżniają przyczyny: *macOS zablokowal polaczenie* to punkty
+1–3 powyżej, *Polaczenie odrzucone* oznacza, że nikt nie słucha na tym porcie.
+
+### Pozostałe przypadki
+
+- **Pusto** — nic nie gra albo sesja nie pasuje do filtra `players`. `--diagnose`
+  wypisze wszystkie sesje z serwera razem z polem `Player.product`; porównaj je
+  z listą `players` w `config.json`.
 - **`Nieprawidlowy token Plex (401)`** — token wygasł albo jest z innego konta.
-- **`Brak polaczenia`** — zły `plex_url` lub serwer nieosiągalny z tej sieci.
 - **Utwory z lokalnych plików / offline w Plexampie** nie tworzą sesji na serwerze,
   więc się nie pokażą.
+- **Wtyczka w ogóle nie pojawia się w SwiftBarze** — sprawdź `chmod +x` na pliku
+  i to, czy nazwa ma postać `nazwa.interwał.py`.
 
 ## Testy
 

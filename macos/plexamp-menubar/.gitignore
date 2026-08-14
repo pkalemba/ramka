@@ -1,0 +1,7 @@
+# Konfiguracja z tokenem Plex - trzymana obok wtyczki, nigdy w repo.
+config.json
+.plexamp-menubar.json
+.swiftbarignore
+
+__pycache__/
+*.pyc

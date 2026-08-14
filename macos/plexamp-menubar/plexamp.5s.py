@@ -16,7 +16,7 @@
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
 # <swiftbar.environment>[VAR_PLEX_URL: http://localhost:32400, VAR_PLEX_TOKEN: , VAR_MAX_LENGTH: 45]</swiftbar.environment>
 #
-# Konfiguracja: ~/.config/plexamp-menubar/config.json (patrz README.md)
+# Konfiguracja: config.json w tym samym katalogu co ten plik (patrz README.md)
 
 import json
 import os
@@ -28,7 +28,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "plexamp-menubar" / "config.json"
+# Konfiguracja lezy obok skryptu (w katalogu wtyczek SwiftBara).
+# Wariant z kropka przydaje sie, gdy SwiftBar probuje uruchomic config.json jak wtyczke.
+CONFIG_NAMES = ("config.json", ".plexamp-menubar.json")
+DEFAULT_CONFIG_PATH = Path(__file__).parent / CONFIG_NAMES[0]
 
 DEFAULTS = {
     # Adres serwera Plex Media Server (ten, z ktorego gra Plexamp).
@@ -106,8 +109,25 @@ def load_config(env=None, config_data=None):
     return cfg
 
 
-def read_config_file(path=None):
-    path = Path(path or os.environ.get("PLEXAMP_MENUBAR_CONFIG") or DEFAULT_CONFIG_PATH)
+def config_candidates(env=None):
+    """Kolejnosc szukania config.json: zmienna srodowiskowa, katalog skryptu,
+    katalog skryptu po rozwinieciu dowiazan (gdy wtyczka jest symlinkiem)."""
+    env = os.environ if env is None else env
+    override = env.get("PLEXAMP_MENUBAR_CONFIG", "")
+    if override:
+        return [Path(override)]
+    directories = [Path(__file__).parent]
+    resolved = Path(__file__).resolve().parent
+    if resolved not in directories:
+        directories.append(resolved)
+    return [directory / name for directory in directories for name in CONFIG_NAMES]
+
+
+def read_config_file(path=None, env=None):
+    if path is None:
+        candidates = config_candidates(env)
+        path = next((item for item in candidates if item.is_file()), candidates[0])
+    path = Path(path)
     try:
         with path.open(encoding="utf-8") as handle:
             data = json.load(handle)
@@ -341,7 +361,7 @@ def render_error(message, cfg, hint=None):
 
 
 SETUP_HINT = (
-    "Utworz ~/.config/plexamp-menubar/config.json:\n"
+    "Utworz config.json obok wtyczki:\n"
     '{\n  "plex_url": "http://localhost:32400",\n  "plex_token": "TWOJ_TOKEN"\n}'
 )
 

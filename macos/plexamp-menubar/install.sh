@@ -1,11 +1,9 @@
 #!/bin/bash
-# Kopiuje wtyczke do katalogu wtyczek SwiftBara i tworzy szkielet konfiguracji.
+# Kopiuje wtyczke i jej config.json do katalogu wtyczek SwiftBara.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN="plexamp.5s.py"
-CONFIG_DIR="${HOME}/.config/plexamp-menubar"
-CONFIG_FILE="${CONFIG_DIR}/config.json"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "Ten instalator jest przeznaczony dla macOS." >&2
@@ -27,14 +25,20 @@ fi
 
 mkdir -p "${PLUGIN_DIR}"
 install -m 755 "${HERE}/${PLUGIN}" "${PLUGIN_DIR}/${PLUGIN}"
-echo "Wtyczka: ${PLUGIN_DIR}/${PLUGIN}"
+echo "Wtyczka:      ${PLUGIN_DIR}/${PLUGIN}"
 
-if [[ ! -f "${CONFIG_FILE}" ]]; then
-  mkdir -p "${CONFIG_DIR}"
+CONFIG_FILE="${PLUGIN_DIR}/config.json"
+if [[ -f "${CONFIG_FILE}" ]]; then
+  echo "Konfiguracja: ${CONFIG_FILE} (juz istnieje, nie ruszam)"
+else
   install -m 600 "${HERE}/config.example.json" "${CONFIG_FILE}"
   echo "Konfiguracja: ${CONFIG_FILE} - wpisz w niej swoj token Plex."
-else
-  echo "Konfiguracja juz istnieje: ${CONFIG_FILE} (nie ruszam)"
+fi
+
+# SwiftBar probuje uruchomic kazdy plik z katalogu wtyczek - config.json ma omijac.
+IGNORE_FILE="${PLUGIN_DIR}/.swiftbarignore"
+if ! grep -qxF "config.json" "${IGNORE_FILE}" 2>/dev/null; then
+  echo "config.json" >> "${IGNORE_FILE}"
 fi
 
 echo "Na koniec: SwiftBar -> Refresh all"

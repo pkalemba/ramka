@@ -5,6 +5,7 @@
 import importlib.util
 import io
 import json
+import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
@@ -80,6 +81,46 @@ class ConfigTests(unittest.TestCase):
     def test_empty_env_value_does_not_override(self):
         cfg = plugin.load_config(env={"VAR_PLEX_TOKEN": ""}, config_data={"plex_token": "abc"})
         self.assertEqual(cfg["plex_token"], "abc")
+
+    def test_default_config_sits_next_to_the_script(self):
+        self.assertEqual(plugin.DEFAULT_CONFIG_PATH.parent, Path(__file__).parent)
+        self.assertEqual(plugin.DEFAULT_CONFIG_PATH.name, "config.json")
+
+    def test_config_candidates_include_script_directory(self):
+        candidates = plugin.config_candidates(env={})
+        self.assertIn(Path(__file__).parent / "config.json", candidates)
+
+    def test_config_candidates_include_hidden_variant(self):
+        candidates = plugin.config_candidates(env={})
+        self.assertIn(Path(__file__).parent / ".plexamp-menubar.json", candidates)
+
+    def test_config_env_override_wins(self):
+        candidates = plugin.config_candidates(env={"PLEXAMP_MENUBAR_CONFIG": "/tmp/inny.json"})
+        self.assertEqual(candidates, [Path("/tmp/inny.json")])
+
+    def test_read_config_file_reads_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text('{"plex_token": "abc"}', encoding="utf-8")
+            self.assertEqual(plugin.read_config_file(path), {"plex_token": "abc"})
+
+    def test_read_config_file_missing_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(plugin.read_config_file(Path(tmp) / "nie-ma.json"), {})
+
+    def test_read_config_file_broken_json_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text("{ to nie jest json", encoding="utf-8")
+            with self.assertRaises(plugin.ConfigError):
+                plugin.read_config_file(path)
+
+    def test_read_config_file_uses_env_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "custom.json"
+            path.write_text('{"plex_url": "http://z-env:32400"}', encoding="utf-8")
+            data = plugin.read_config_file(env={"PLEXAMP_MENUBAR_CONFIG": str(path)})
+            self.assertEqual(data["plex_url"], "http://z-env:32400")
 
     def test_token_cmd_used_when_token_empty(self):
         cfg = plugin.load_config(env={}, config_data={"token_cmd": "echo secret"})

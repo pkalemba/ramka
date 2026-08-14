@@ -105,8 +105,7 @@ i w `config.json` obok wtyczki:
 
 ## Konfiguracja
 
-Wszystkie opcje `config.json` (każdą można też nadpisać zmienną środowiskową
-`VAR_<NAZWA>` ustawianą w SwiftBarze):
+Wszystkie opcje `config.json`:
 
 | Klucz | Domyślnie | Opis |
 | --- | --- | --- |
@@ -135,6 +134,30 @@ Przykład — tylko tytuł, krócej, bez pauzy:
 }
 ```
 
+### Kolejność pierwszeństwa
+
+Od najsłabszego do najsilniejszego:
+
+```
+wartości domyślne  <  VAR_*  <  config.json  <  PLEXAMP_MENUBAR_*
+```
+
+`VAR_*` stoi **niżej** niż plik, bo to namespace SwiftBara — wstrzykuje on te
+zmienne sam, z metadanych wtyczki albo z ustawień zapisanych w
+`<wtyczka>.vars.json`. Gdyby stały wyżej, „domyślny" adres z metadanych po cichu
+nadpisywałby `plex_url` z pliku (dokładnie to się działo do wersji 1.0.1).
+Wtyczka celowo nie deklaruje `<swiftbar.environment>`.
+
+Jeśli chcesz coś nadpisać z zewnątrz, użyj prefiksu `PLEXAMP_MENUBAR_` — ustawia
+go wyłącznie użytkownik, więc wygrywa z plikiem:
+
+```sh
+PLEXAMP_MENUBAR_PLEX_URL=https://plex.example.com python3 plexamp.5s.py
+```
+
+`--diagnose` wypisuje przy każdym ustawieniu jego źródło (`plik`, `domyslne`,
+albo nazwę zmiennej środowiskowej).
+
 ## Rozwiązywanie problemów
 
 Wbudowany tryb diagnostyczny — pokazuje, który plik konfiguracyjny został użyty,
@@ -145,6 +168,21 @@ python3 "$PLUGIN_DIR"/plexamp.5s.py --diagnose
 ```
 
 To samo jest pod pozycją **Diagnostyka w Terminalu** w menu błędu.
+
+### „W Terminalu widzę inny adres/serwer niż w pasku menu"
+
+Sprawdź w `--diagnose` kolumnę po prawej — pokazuje źródło każdej wartości.
+Jeśli przy `plex_url` widnieje `VAR_PLEX_URL`, to SwiftBar wstrzykuje ten adres
+z zapisanych ustawień wtyczki (`<wtyczka>.vars.json` obok pliku wtyczki);
+usuń ten plik albo wyczyść zmienne w SwiftBarze. Od wersji 1.0.1 `config.json`
+i tak wygrywa z `VAR_*`, więc problem nie powinien wracać.
+
+### Nazwa pliku wtyczki
+
+Musi mieć postać `nazwa.<interwał>.py`, np. `plexamp.5s.py` — SwiftBar czyta
+interwał odświeżania z nazwy. Przy `plexamp.s5.py` (przestawione znaki) wtyczka
+uruchomi się tylko raz, przy starcie, i nigdy się nie odświeży. `--diagnose`
+ostrzega, gdy nazwa nie pasuje do wzorca.
 
 ### „Działa z Terminala, ale nie w SwiftBarze"
 

@@ -66,20 +66,60 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg["plex_url"], "http://nas:32400")
         self.assertEqual(cfg["user"], "ala")
 
-    def test_env_overrides_file_and_coerces_types(self):
+    def test_env_fills_gaps_and_coerces_types(self):
         cfg = plugin.load_config(
             env={
-                "VAR_PLEX_URL": "http://env:32400",
                 "VAR_MAX_LENGTH": "12",
                 "VAR_HIDE_WHEN_IDLE": "false",
                 "VAR_PLAYERS": "Plexamp, Plex Web",
             },
-            config_data={"plex_url": "http://file:32400", "max_length": 99},
+            config_data={"plex_url": "http://file:32400"},
         )
-        self.assertEqual(cfg["plex_url"], "http://env:32400")
+        self.assertEqual(cfg["plex_url"], "http://file:32400")
         self.assertEqual(cfg["max_length"], 12)
         self.assertFalse(cfg["hide_when_idle"])
         self.assertEqual(cfg["players"], ["Plexamp", "Plex Web"])
+
+    def test_config_file_beats_swiftbar_injected_var(self):
+        # SwiftBar wstrzykuje VAR_* sam z siebie - nie moze nadpisac config.json
+        cfg = plugin.load_config(
+            env={"VAR_PLEX_URL": "http://localhost:32400"},
+            config_data={"plex_url": "https://plex.example.com/"},
+        )
+        self.assertEqual(cfg["plex_url"], "https://plex.example.com")
+
+    def test_explicit_prefix_beats_config_file(self):
+        cfg = plugin.load_config(
+            env={"PLEXAMP_MENUBAR_PLEX_URL": "http://reczny:32400"},
+            config_data={"plex_url": "https://plex.example.com"},
+        )
+        self.assertEqual(cfg["plex_url"], "http://reczny:32400")
+
+    def test_sources_record_where_each_value_came_from(self):
+        sources = {}
+        plugin.load_config(
+            env={"VAR_PLEX_URL": "http://localhost:32400", "VAR_MAX_LENGTH": "10"},
+            config_data={"plex_url": "https://plex.example.com", "user": "ala"},
+            sources=sources,
+        )
+        self.assertEqual(sources["plex_url"], "plik")
+        self.assertEqual(sources["user"], "plik")
+        self.assertEqual(sources["max_length"], "VAR_MAX_LENGTH")
+        self.assertEqual(sources["timeout"], "domyslne")
+
+    def test_plugin_declares_no_swiftbar_environment(self):
+        # metadane <swiftbar.environment> kaza SwiftBarowi wstrzykiwac VAR_*
+        source = Path(__file__).with_name("plexamp.5s.py").read_text(encoding="utf-8")
+        declarations = [
+            line
+            for line in source.splitlines()
+            if line.replace(" ", "").startswith("#<swiftbar.environment>")
+        ]
+        self.assertEqual(declarations, [])
+
+    def test_plugin_filename_carries_refresh_interval(self):
+        self.assertTrue(plugin.REFRESH_SUFFIX.search("plexamp.5s.py"))
+        self.assertIsNone(plugin.REFRESH_SUFFIX.search("plexamp.s5.py"))
 
     def test_empty_env_value_does_not_override(self):
         cfg = plugin.load_config(env={"VAR_PLEX_TOKEN": ""}, config_data={"plex_token": "abc"})

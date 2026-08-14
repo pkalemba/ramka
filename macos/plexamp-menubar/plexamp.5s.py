@@ -5,7 +5,7 @@
 # Pokazuje w pasku menu macOS utwor aktualnie grany w Plexampie.
 #
 # <bitbar.title>Plexamp Now Playing</bitbar.title>
-# <bitbar.version>1.0.0</bitbar.version>
+# <bitbar.version>1.0.1</bitbar.version>
 # <bitbar.author>ramka</bitbar.author>
 # <bitbar.desc>Aktualnie grany utwor z Plexampa w pasku menu.</bitbar.desc>
 # <bitbar.dependencies>python3</bitbar.dependencies>
@@ -14,13 +14,16 @@
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
 # <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
 # <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
-# <swiftbar.environment>[VAR_PLEX_URL: http://localhost:32400, VAR_PLEX_TOKEN: , VAR_MAX_LENGTH: 45]</swiftbar.environment>
+#
+# Swiadomie bez <swiftbar.environment> - SwiftBar wstrzykuje zadeklarowane tam
+# zmienne VAR_* przy kazdym uruchomieniu, a te nadpisywaly ustawienia z pliku.
 #
 # Konfiguracja: config.json w tym samym katalogu co ten plik (patrz README.md)
 
 import errno
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
@@ -62,6 +65,8 @@ DEFAULTS = {
 }
 
 ENV_PREFIXES = ("VAR_", "PLEXAMP_MENUBAR_")
+# SwiftBar odswieza wtyczke tylko wtedy, gdy nazwa ma postac nazwa.5s.py
+REFRESH_SUFFIX = re.compile(r"\.\d+[smhd]\.[^.]+$")
 BOOL_KEYS = {"music_only", "hide_when_idle", "show_paused"}
 INT_KEYS = {"max_length"}
 FLOAT_KEYS = {"timeout"}
@@ -90,22 +95,38 @@ def _coerce(key, value):
     return value
 
 
-def load_config(env=None, config_data=None):
-    """Laczy DEFAULTS + plik konfiguracyjny + zmienne srodowiskowe (env wygrywa)."""
+def _apply_env(cfg, env, prefix, sources):
+    for key in DEFAULTS:
+        env_key = prefix + key.upper()
+        if env.get(env_key, "") != "":
+            cfg[key] = _coerce(key, env[env_key])
+            sources[key] = env_key
+
+
+def load_config(env=None, config_data=None, sources=None):
+    """Laczy ustawienia wedlug rosnacego pierwszenstwa:
+
+    DEFAULTS < VAR_* < plik konfiguracyjny < PLEXAMP_MENUBAR_*
+
+    VAR_* stoi nizej niz plik, bo SwiftBar sam wstrzykuje te zmienne (z metadanych
+    wtyczki albo z zapisanych ustawien) - inaczej cicho nadpisalyby config.json.
+    PLEXAMP_MENUBAR_* ustawia wylacznie uzytkownik, wiec zostaje na szczycie.
+    """
     env = os.environ if env is None else env
+    sources = {} if sources is None else sources
     cfg = dict(DEFAULTS)
+    for key in DEFAULTS:
+        sources[key] = "domyslne"
+
+    _apply_env(cfg, env, "VAR_", sources)
 
     if config_data:
         for key, value in config_data.items():
             if key in cfg:
                 cfg[key] = _coerce(key, value)
+                sources[key] = "plik"
 
-    for key in DEFAULTS:
-        for prefix in ENV_PREFIXES:
-            env_key = prefix + key.upper()
-            if env.get(env_key, "") != "":
-                cfg[key] = _coerce(key, env[env_key])
-                break
+    _apply_env(cfg, env, "PLEXAMP_MENUBAR_", sources)
 
     cfg["plex_url"] = str(cfg["plex_url"]).rstrip("/")
     return cfg
@@ -481,6 +502,21 @@ def diagnose(stream=None):
     say("SwiftBar:      %s" % (os.environ.get("SWIFTBAR_VERSION") or "uruchomione poza SwiftBarem"))
     say()
 
+    plugin_path = Path(__file__).resolve()
+    if not REFRESH_SUFFIX.search(plugin_path.name):
+        say("UWAGA: nazwa pliku nie zawiera interwalu odswiezania (np. plexamp.5s.py)")
+        say("       SwiftBar uruchomi wtyczke tylko raz, przy starcie.")
+        say()
+
+    vars_file = plugin_path.with_name(plugin_path.name + ".vars.json")
+    if vars_file.is_file():
+        say("UWAGA: %s - SwiftBar wstrzykuje stad zmienne VAR_*" % vars_file)
+        say()
+
+    injected = sorted(key for key in os.environ if key.startswith("VAR_") and os.environ[key])
+    say("Zmienne VAR_* w srodowisku: %s" % (", ".join(injected) if injected else "brak"))
+    say()
+
     say("Szukane pliki konfiguracyjne:")
     for candidate in config_candidates():
         say("  %s %s" % ("[jest]" if candidate.is_file() else "[brak]", candidate))
@@ -491,10 +527,13 @@ def diagnose(stream=None):
         say("BLAD: %s" % exc)
         return 1
 
-    cfg = load_config(config_data=config_data)
+    sources = {}
+    cfg = load_config(config_data=config_data, sources=sources)
     say("uzyty plik:    %s" % active_config_path())
-    say("plex_url:      %s" % cfg["plex_url"])
-    say("players:       %s" % (cfg["players"] or "[wszystkie]"))
+    say()
+    say("Ustawienia (i skad pochodza):")
+    for key in ("plex_url", "players", "user", "music_only", "show_paused", "max_length"):
+        say("  %-14s %-28s <- %s" % (key, cfg[key], sources.get(key, "?")))
     say()
 
     try:

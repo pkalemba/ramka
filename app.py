@@ -1,8 +1,9 @@
 # Calendar + Countdown Renderer for ESPHome + Waveshare 7.5" e-paper
 # Endpoints:
-#   GET /calendar.png   - miesięczny kalendarz z eventami HA
-#   GET /countdown.png  - odliczanie dni do daty
-#   GET /health         - health check
+#   GET /calendar.png     - miesięczny kalendarz z eventami HA
+#   GET /countdown.png    - odliczanie dni do daty
+#   GET /kubesavings.png  - statystyki instancji KubeSavings
+#   GET /health           - health check
 
 import requests
 from flask import Flask, send_file, request
@@ -28,6 +29,11 @@ HA_HEADERS = {
     "Authorization": f"Bearer {HA_TOKEN}",
     "Content-Type": "application/json",
 }
+
+# KubeSavings — adres backendu i Personal Access Token konta superusera
+# (ks_pat_...). Bez tokenu endpoint /kubesavings.png zwraca 500.
+KS_URL = os.environ.get("KS_URL", "").rstrip("/")
+KS_TOKEN = os.environ.get("KS_TOKEN", "")
 
 # Wymiary ekranu Waveshare 7.5"
 SCREEN_WIDTH = 800
@@ -409,6 +415,151 @@ def render_countdown(title: str, target_date: date,
 
     return img
 
+# ===== KUBESAVINGS RENDERER =====
+
+def get_kubesavings_stats() -> dict:
+    """Pobiera liczniki z GET /admin/stats backendu KubeSavings.
+
+    Wymaga Personal Access Tokena konta superusera (ks_pat_...) — endpoint jest
+    read-only, ale chroniony tak jak reszta /admin.
+    """
+    if not KS_URL or not KS_TOKEN:
+        raise RuntimeError("Ustaw kubesavings_url i kubesavings_token w konfiguracji dodatku")
+
+    url = f"{KS_URL}/admin/stats"
+    logger.info(f"Fetching KubeSavings stats from {url}")
+    resp = requests.get(url, headers={"Authorization": f"Bearer {KS_TOKEN}"}, timeout=10)
+    if resp.status_code != 200:
+        raise RuntimeError(f"{url} -> HTTP {resp.status_code}")
+    return resp.json()
+
+
+def _fmt_int(value) -> str:
+    """1234 -> '1 234' (spacja jako separator tysięcy, czytelna na e-ink)."""
+    try:
+        return f"{int(value):,}".replace(",", " ")
+    except (TypeError, ValueError):
+        return "?"
+
+
+def _fit_font(draw, texts, loader, size: int, max_width: int, min_size: int = 16):
+    """Największy rozmiar (≤ size), w którym każdy z `texts` mieści się w max_width.
+
+    Jeden wspólny rozmiar dla całego wiersza — inaczej sąsiednie kafle miałyby
+    różną wielkość cyfr, a szeroka wartość (np. $14 211) wychodziłaby poza ekran.
+    """
+    def width(text, font) -> int:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        return bbox[2] - bbox[0]
+
+    while size > min_size:
+        font = loader(size)
+        if all(width(t, font) <= max_width for t in texts):
+            return font
+        size -= 2
+    return loader(min_size)
+
+
+def _draw_centered(draw, text: str, font, center_x: int, y: int, fill) -> None:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    draw.text((center_x - (bbox[2] - bbox[0]) // 2 - bbox[0], y - bbox[1]), text, fill=fill, font=font)
+
+
+def render_kubesavings(stats: dict, invert: bool = False) -> Image.Image:
+    """Statystyki instancji KubeSavings na ekran 800x480.
+
+    Układ: nagłówek → 3 duże kafle (użytkownicy / klastry / aktywni) →
+    4 mniejsze liczniki → stopka z godziną odświeżenia.
+    """
+    bg = (0, 0, 0) if invert else (255, 255, 255)
+    fg = (255, 255, 255) if invert else (0, 0, 0)
+
+    img = Image.new("RGB", (SCREEN_WIDTH, SCREEN_HEIGHT), bg)
+    draw = ImageDraw.Draw(img)
+
+    users = stats.get("users", {})
+    clusters = stats.get("clusters", {})
+    recs = stats.get("recommendations", {})
+
+    # ----- Nagłówek -----
+    font_brand = load_font_bold(30)
+    font_stamp = load_font_regular(17)
+    now = datetime.now()
+    draw.text((40, 16), "KubeSavings", fill=fg, font=font_brand)
+    stamp = now.strftime("%d.%m %H:%M")
+    s_bbox = draw.textbbox((0, 0), stamp, font=font_stamp)
+    draw.text((SCREEN_WIDTH - 40 - (s_bbox[2] - s_bbox[0]), 26), stamp, fill=fg, font=font_stamp)
+
+    sep1_y = 66
+    draw.line([(40, sep1_y), (SCREEN_WIDTH - 40, sep1_y)], fill=fg, width=2)
+
+    # ----- Trzy duże kafle -----
+    font_tile_label = load_font_bold(17)
+    font_tile_sub = load_font_regular(18)
+
+    tiles = [
+        ("UŻYTKOWNICY", _fmt_int(users.get("total")), f"{_fmt_int(users.get('paying'))} płacących"),
+        ("KLASTRY", _fmt_int(clusters.get("total")), f"{_fmt_int(clusters.get('active'))} aktywnych"),
+        ("AKTYWNI (24H)", _fmt_int(users.get("active_24h")), f"{_fmt_int(clusters.get('reporting_24h'))} klastrów"),
+    ]
+    tile_w = SCREEN_WIDTH // 3
+    font_tile_num = _fit_font(draw, [t[1] for t in tiles], load_font_bold, 92, tile_w - 40)
+    for i, (label, value, sub) in enumerate(tiles):
+        cx = tile_w * i + tile_w // 2
+        if i > 0:
+            x = tile_w * i
+            draw.line([(x, sep1_y + 12), (x, 278)], fill=fg, width=1)
+        _draw_centered(draw, label, font_tile_label, cx, 84, fg)
+        _draw_centered(draw, value, font_tile_num, cx, 118, fg)
+        _draw_centered(draw, sub, font_tile_sub, cx, 240, fg)
+
+    sep2_y = 292
+    draw.line([(40, sep2_y), (SCREEN_WIDTH - 40, sep2_y)], fill=fg, width=2)
+
+    # ----- Cztery mniejsze liczniki -----
+    font_small_label = load_font_regular(16)
+
+    savings = stats.get("potential_savings_usd") or 0
+    counters = [
+        (_fmt_int(clusters.get("nodes")), "węzły"),
+        (_fmt_int(recs.get("open")), "rekomendacje"),
+        (_fmt_int(users.get("new_30d")), "nowi (30 dni)"),
+        (f"${_fmt_int(round(float(savings)))}", "potencjał / mies"),
+    ]
+    # Kafle mieszczą się w tym samym marginesie co linie oddzielające (40 px).
+    cell_w = (SCREEN_WIDTH - 80) // len(counters)
+    font_small_num = _fit_font(draw, [c[0] for c in counters], load_font_bold, 44, cell_w - 16, min_size=14)
+    for i, (value, label) in enumerate(counters):
+        cx = 40 + cell_w * i + cell_w // 2
+        _draw_centered(draw, value, font_small_num, cx, 312, fg)
+        _draw_centered(draw, label, font_small_label, cx, 376, fg)
+
+    sep3_y = 424
+    draw.line([(40, sep3_y), (SCREEN_WIDTH - 40, sep3_y)], fill=fg, width=1)
+
+    # ----- Stopka -----
+    generated = stats.get("generated_at")
+    footer = f"dane: {generated[11:16]} UTC" if isinstance(generated, str) and len(generated) >= 16 else "dane: —"
+    _draw_centered(draw, footer, load_font_regular(15), SCREEN_WIDTH // 2, 440, fg)
+
+    return img
+
+
+def render_error(title: str, detail: str, invert: bool = False) -> Image.Image:
+    """Zastępczy ekran, gdy nie udało się pobrać danych — e-ink musi coś pokazać."""
+    bg = (0, 0, 0) if invert else (255, 255, 255)
+    fg = (255, 255, 255) if invert else (0, 0, 0)
+
+    img = Image.new("RGB", (SCREEN_WIDTH, SCREEN_HEIGHT), bg)
+    draw = ImageDraw.Draw(img)
+    _draw_centered(draw, title, load_font_bold(40), SCREEN_WIDTH // 2, 190, fg)
+    _draw_centered(draw, detail[:70], load_font_regular(18), SCREEN_WIDTH // 2, 250, fg)
+    _draw_centered(
+        draw, datetime.now().strftime("%d.%m %H:%M"), load_font_regular(15), SCREEN_WIDTH // 2, 300, fg
+    )
+    return img
+
+
 # ===== ENDPOINTS =====
 
 @app.route("/calendar.png")
@@ -494,6 +645,31 @@ def countdown_png():
     logger.info(f"Rendering countdown to {target_date} (title={title!r})")
 
     img = render_countdown(title, target_date, start_date=start_date, invert=invert)
+
+    bio = io.BytesIO()
+    img.save(bio, "PNG")
+    bio.seek(0)
+    return send_file(bio, mimetype="image/png")
+
+
+@app.route("/kubesavings.png")
+def kubesavings_png():
+    """Statystyki instancji KubeSavings (użytkownicy / klastry / aktywni).
+
+    Query params (opcjonalne):
+      invert=true   – białe cyfry na czarnym tle
+
+    Dane pochodzą z GET /admin/stats backendu — skonfiguruj kubesavings_url
+    i kubesavings_token (PAT superusera) w opcjach dodatku.
+    """
+    invert = request.args.get("invert", "false").lower() == "true"
+
+    try:
+        stats = get_kubesavings_stats()
+        img = render_kubesavings(stats, invert=invert)
+    except Exception as e:
+        logger.error(f"Error fetching KubeSavings stats: {e}", exc_info=True)
+        img = render_error("KubeSavings", f"Brak danych: {e}", invert=invert)
 
     bio = io.BytesIO()
     img.save(bio, "PNG")

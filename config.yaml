@@ -1,6 +1,6 @@
 name: "E-Paper Renderer"
-description: "Serwer PNG dla wyświetlaczy e-ink (Waveshare 7.5\"). Generuje kalendarz HA i odliczanie dni do daty."
-version: "1.0.0"
+description: "Serwer PNG dla wyświetlaczy e-ink (Waveshare 7.5\"). Generuje kalendarz HA, odliczanie dni do daty i statystyki KubeSavings."
+version: "1.1.0"
 slug: "epaper_renderer"
 init: false
 arch:
@@ -21,12 +21,18 @@ options:
     - "calendar.praca"
     - "calendar.igi"
     - "calendar.swieta_w_polsce"
+  # Backend KubeSavings + Personal Access Token superusera (ks_pat_...).
+  # Puste = endpoint /kubesavings.png pokaże ekran "Brak danych".
+  kubesavings_url: ""
+  kubesavings_token: ""
 
 schema:
   ha_url: str
   ha_token: str
   calendars:
     - str
+  kubesavings_url: str
+  kubesavings_token: password
 
 map:
   - config:rw

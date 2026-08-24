@@ -64,6 +64,14 @@ online_image:
   #   type: BINARY
   #   update_interval: 30min
 
+  # Opcjonalnie: statystyki KubeSavings (wymaga kubesavings_url + kubesavings_token
+  # w opcjach dodatku)
+  # - id: img_kubesavings
+  #   url: "${api_server}/kubesavings.png"
+  #   format: PNG
+  #   type: BINARY
+  #   update_interval: 30min
+
 # ─── Wyświetlacz ──────────────────────────────────────────────────────────────
 
 spi:

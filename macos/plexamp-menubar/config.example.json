@@ -1,0 +1,10 @@
+{
+  "plex_url": "http://localhost:32400",
+  "plex_token": "TWOJ_TOKEN",
+  "players": ["Plexamp"],
+  "music_only": true,
+  "max_length": 45,
+  "hide_when_idle": true,
+  "show_paused": true,
+  "title_format": "{artist} – {title}"
+}
